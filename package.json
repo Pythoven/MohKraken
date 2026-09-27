@@ -6,7 +6,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --mac"
+    "dist": "electron-builder --mac",
+    "install-app": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir && rm -rf /Applications/MohKraken.app && ditto dist/mac/MohKraken.app /Applications/MohKraken.app && codesign --force --deep -s - /Applications/MohKraken.app"
   },
   "author": "Mohamed Saleh",
   "license": "MIT",
@@ -19,7 +20,15 @@
       "src/**/*"
     ],
     "mac": {
-      "category": "public.app-category.developer-tools"
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.png",
+      "target": [
+        "dir"
+      ],
+      "identity": null
+    },
+    "directories": {
+      "buildResources": "build"
     }
   },
   "devDependencies": {

@@ -7,6 +7,10 @@ const STORE_FILE = () => path.join(app.getPath('userData'), 'mohkraken.json');
 const watchers = new Map();
 let win;
 
+// Apps launched from Finder get a minimal PATH; make sure Homebrew/MacPorts git is found.
+process.env.PATH = [...new Set(['/opt/homebrew/bin', '/usr/local/bin', '/opt/local/bin',
+  ...(process.env.PATH || '').split(':'), '/usr/bin', '/bin'])].filter(Boolean).join(':');
+
 function readStore() {
   try { return JSON.parse(fs.readFileSync(STORE_FILE(), 'utf8')); } catch { return {}; }
 }

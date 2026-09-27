@@ -7,7 +7,7 @@ A GitKraken-style desktop Git client built with Electron. It drives your install
 ```bash
 npm install
 npm start          # launch the app
-npm run dist       # build a macOS .app/.dmg into dist/
+npm run install-app  # package and install to /Applications/MohKraken.app
 ```
 
 ## Features
