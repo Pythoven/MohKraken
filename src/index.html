@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+  <title>MohKraken</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header id="titlebar">
+    <div class="brand"><span class="logo">🐙</span> MohKraken</div>
+    <div id="tabs"></div>
+    <button id="tab-add" class="tab-add" title="New tab">+</button>
+  </header>
+
+  <nav id="toolbar" hidden>
+    <div class="tb-group">
+      <div class="tb-repo">
+        <span class="tb-label">repository</span>
+        <span id="tb-repo-name" class="tb-value"></span>
+      </div>
+      <div class="tb-repo">
+        <span class="tb-label">branch</span>
+        <span id="tb-branch-name" class="tb-value"></span>
+      </div>
+    </div>
+    <div class="tb-group center">
+      <button class="tb-btn" data-action="undo" title="Undo last commit (soft reset)"><i>↶</i>Undo</button>
+      <span class="tb-sep"></span>
+      <button class="tb-btn" data-action="pull" title="Pull (fast-forward if possible)"><i>⇣</i>Pull</button>
+      <button class="tb-btn" data-action="push" title="Push"><i>⇡</i>Push</button>
+      <button class="tb-btn" data-action="fetch" title="Fetch all"><i>⟳</i>Fetch</button>
+      <span class="tb-sep"></span>
+      <button class="tb-btn" data-action="branch" title="Create branch"><i>⑂</i>Branch</button>
+      <button class="tb-btn" data-action="stash" title="Stash changes"><i>▤</i>Stash</button>
+      <button class="tb-btn" data-action="pop" title="Pop latest stash"><i>▥</i>Pop</button>
+    </div>
+    <div class="tb-group right">
+      <input id="search" type="search" placeholder="Search commits…  ⌘F">
+      <button class="tb-btn small" data-action="terminal" title="Open in Terminal"><i>⌨</i></button>
+      <button class="tb-btn small" data-action="finder" title="Reveal in Finder"><i>📁</i></button>
+      <button class="tb-btn small" data-action="profile" title="Git identity"><i>👤</i></button>
+      <button class="tb-btn small" data-action="refresh" title="Refresh  ⌘R"><i>↻</i></button>
+    </div>
+  </nav>
+
+  <main id="welcome">
+    <div class="welcome-card">
+      <div class="welcome-logo">🐙</div>
+      <h1>MohKraken</h1>
+      <p class="muted">A legendary Git client.</p>
+      <div class="welcome-actions">
+        <button class="btn primary" data-action="open">Open a repo</button>
+        <button class="btn" data-action="clone">Clone a repo</button>
+        <button class="btn" data-action="init">Init a repo</button>
+      </div>
+      <h3>Recent repositories</h3>
+      <ul id="recent-list"></ul>
+    </div>
+  </main>
+
+  <main id="workspace" hidden>
+    <aside id="sidebar"></aside>
+    <div class="resizer" data-target="sidebar"></div>
+    <section id="center">
+      <div id="graph-header">
+        <span class="col-refs">Branch / Tag</span>
+        <span class="col-graph">Graph</span>
+        <span class="col-msg">Commit message</span>
+        <span class="col-author">Author</span>
+        <span class="col-date">Date</span>
+        <span class="col-sha">SHA</span>
+      </div>
+      <div id="graph-scroll"><div id="graph-rows"></div></div>
+      <div id="diff-view" hidden>
+        <div class="diff-head">
+          <div class="diff-title"><span id="diff-path"></span><span id="diff-sub" class="muted"></span></div>
+          <div class="diff-tools">
+            <button class="btn small" id="diff-mode">Split view</button>
+            <button class="btn small" id="diff-close">✕ Close</button>
+          </div>
+        </div>
+        <div id="diff-body"></div>
+      </div>
+    </section>
+    <div class="resizer" data-target="panel"></div>
+    <aside id="panel"></aside>
+  </main>
+
+  <footer id="statusbar">
+    <span id="status-text">Ready</span>
+    <span id="status-right"></span>
+  </footer>
+
+  <div id="ctx-menu" hidden></div>
+  <div id="modal-backdrop" hidden><div id="modal"></div></div>
+  <div id="toasts"></div>
+
+  <script src="graph.js"></script>
+  <script src="diff.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

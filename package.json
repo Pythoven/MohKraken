@@ -1,0 +1,29 @@
+{
+  "name": "mohkraken",
+  "productName": "MohKraken",
+  "version": "1.0.0",
+  "description": "A GitKraken-style desktop Git client",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac"
+  },
+  "author": "Mohamed Saleh",
+  "license": "MIT",
+  "build": {
+    "appId": "com.mohkraken.app",
+    "productName": "MohKraken",
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools"
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3"
+  }
+}
