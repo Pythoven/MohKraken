@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('mk', {
+  platform: process.platform,
   git: (cwd, args, input) => ipcRenderer.invoke('git', cwd, args, input),
   storeGet: () => ipcRenderer.invoke('store:get'),
   storeSet: (key, value) => ipcRenderer.invoke('store:set', key, value),

@@ -34,3 +34,15 @@ npm run install-app  # package and install to /Applications/MohKraken.app
 | ↑ / ↓ | Move through commits |
 | ⌘↵ | Commit |
 | Esc | Close diff |
+
+## Windows
+
+Install [Git for Windows](https://git-scm.com/download/win) and [Node.js](https://nodejs.org), then:
+
+```bash
+git clone <your-repo-url> MohKraken
+cd MohKraken
+npm install
+npm start            # run it
+npm run dist:win     # build an installer: dist\MohKraken Setup 1.0.0.exe
+```

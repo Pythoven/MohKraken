@@ -2,7 +2,7 @@
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = Diff.esc;
-const basename = (p) => p.replace(/\/+$/, '').split('/').pop();
+const basename = (p) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
 const SEP = '\x1f';
 const COMMIT_LIMIT_STEP = 2000;
 
@@ -708,8 +708,27 @@ async function doCommit() {
   }
 }
 
+// Checks out a branch; if local changes block it, offers to stash them first (like GitKraken).
+async function checkout(args, label) {
+  const res = await window.mk.git(repoPath(), ['checkout', ...args]);
+  if (res.code === 0) return loadRepo();
+  if (!/would be overwritten|commit your changes or stash/i.test(res.stderr)) return toast(res.stderr.trim(), 'error', 'Checkout failed');
+  const choice = await modal({
+    title: 'Uncommitted changes',
+    body: `<p>Your local changes would be overwritten by switching to <b>${esc(label)}</b>.</p>`,
+    buttons: [{ label: 'Stash & switch', value: 'stash', cls: 'primary' }],
+  });
+  if (choice !== 'stash') return;
+  await run(`Stashing and switching to ${label}…`, async () => {
+    await git(['stash', 'push', '-u', '-m', `WIP before switching to ${label}`]);
+    await git(['checkout', ...args]);
+  });
+  toast('Your changes were stashed – pop them from STASHES when ready', 'success');
+}
+
 async function checkoutLocal(name) {
-  await run(`Checking out ${name}…`, () => git(['checkout', name]));
+  setBusy(+1, `Checking out ${name}…`);
+  try { await checkout([name], name); } finally { setBusy(-1); }
 }
 
 async function checkoutRemote(remoteRef) {
@@ -724,10 +743,11 @@ async function checkoutRemote(remoteRef) {
       buttons: [{ label: 'Checkout local', value: 'local' }, { label: 'Reset local to remote', value: 'reset', cls: 'danger' }],
     });
     if (choice === 'local') return checkoutLocal(local.name);
-    if (choice === 'reset') return run('Resetting…', () => git(['checkout', '-B', r.branch, remoteRef]));
+    if (choice === 'reset') return checkout(['-B', r.branch, remoteRef], r.branch);
     return;
   }
-  await run(`Checking out ${remoteRef}…`, () => git(['checkout', '-b', r.branch, '--track', remoteRef]));
+  setBusy(+1, `Checking out ${remoteRef}…`);
+  try { await checkout(['-b', r.branch, '--track', remoteRef], r.branch); } finally { setBusy(-1); }
 }
 
 async function pull() {
@@ -1363,6 +1383,11 @@ function handleAction(action) {
 /* ---------------------------------------------------------------- boot */
 
 (async function boot() {
+  document.body.classList.add(`platform-${window.mk.platform}`);
+  if (window.mk.platform !== 'darwin') $$('[placeholder*="⌘"], [title*="⌘"]').forEach((el) => {
+    if (el.placeholder) el.placeholder = el.placeholder.replace('⌘', 'Ctrl+');
+    if (el.title) el.title = el.title.replace('⌘', 'Ctrl+');
+  });
   state.store = await window.mk.storeGet();
   state.diffMode = state.store.diffMode || 'inline';
   if (state.store.sidebarWidth) $('#sidebar').style.width = state.store.sidebarWidth;

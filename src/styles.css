@@ -80,6 +80,7 @@ input[type=checkbox] { width: auto; accent-color: var(--accent); }
   -webkit-app-region: drag;
   gap: 6px;
 }
+.platform-win32 #titlebar, .platform-linux #titlebar { padding-left: 12px; padding-right: 150px; }
 .brand { align-self: center; font-weight: 700; color: var(--accent-2); margin-right: 10px; letter-spacing: .3px; }
 .logo { filter: hue-rotate(160deg); }
 #tabs { display: flex; gap: 2px; overflow: hidden; }

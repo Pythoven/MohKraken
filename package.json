@@ -7,7 +7,8 @@
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --mac",
-    "install-app": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir && rm -rf /Applications/MohKraken.app && ditto dist/mac/MohKraken.app /Applications/MohKraken.app && codesign --force --deep -s - /Applications/MohKraken.app"
+    "install-app": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir && rm -rf /Applications/MohKraken.app && ditto dist/mac/MohKraken.app /Applications/MohKraken.app && codesign --force --deep -s - /Applications/MohKraken.app",
+    "dist:win": "electron-builder --win nsis"
   },
   "author": "Mohamed Saleh",
   "license": "MIT",
@@ -29,6 +30,17 @@
     },
     "directories": {
       "buildResources": "build"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
     }
   },
   "devDependencies": {

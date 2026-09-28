@@ -44,7 +44,9 @@ function createWindow() {
     minHeight: 600,
     title: 'MohKraken',
     backgroundColor: '#1b1e27',
-    titleBarStyle: 'hiddenInset',
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hiddenInset' }
+      : { titleBarStyle: 'hidden', titleBarOverlay: { color: '#13151c', symbolColor: '#d8dde6', height: 38 } }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -79,7 +81,10 @@ ipcMain.handle('dialog:openDir', async (_e, title) => {
 
 ipcMain.handle('shell:openPath', (_e, p) => shell.openPath(p));
 ipcMain.handle('shell:openTerminal', (_e, p) => {
-  spawn('open', ['-a', 'Terminal', p], { detached: true });
+  const opts = { cwd: p, detached: true, stdio: 'ignore' };
+  if (process.platform === 'darwin') spawn('open', ['-a', 'Terminal', p], opts);
+  else if (process.platform === 'win32') spawn('cmd.exe', ['/c', 'start', '', 'cmd.exe'], opts);
+  else spawn('x-terminal-emulator', [], opts);
 });
 ipcMain.handle('fs:exists', (_e, p) => fs.existsSync(p));
 ipcMain.handle('fs:appendIgnore', (_e, repo, pattern) => {
