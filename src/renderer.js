@@ -352,7 +352,10 @@ function relTime(sec) {
   if (diff < 60) return 'just now';
   if (diff < 3600) return `${Math.floor(diff / 60)} min ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)} hr ago`;
-  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)} days ago`;
+  if (diff < 86400 * 7) {
+    const days = Math.floor(diff / 86400);
+    return `${days} day${days === 1 ? '' : 's'} ago`;
+  }
   return new Date(sec * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
@@ -409,7 +412,7 @@ function renderVisibleRows(force) {
     const pills = refPills(d, c.hash);
     const pillHtml = pills.slice(0, 1).map((p) =>
       `<span class="pill ${p.cls}" data-ref="${p.ref}" data-name="${esc(p.name)}" style="--lane:${lineColor}" title="${esc(p.label)}"><span class="pi">${p.icons}</span>${esc(p.label)}</span>`).join('')
-      + (pills.length > 1 ? `<span class="pill more" title="${esc(pills.slice(1).map((p) => p.label).join('\n'))}">+${pills.length - 1}</span>` : '');
+      + (pills.length > 1 ? `<span class="pill more" data-sha="${c.hash}" title=""${esc(pills.slice(1).map((p) => p.label).join('\n'))}">+${pills.length - 1}</span>` : '');
     html += `<div class="g-row ${sel} ${dim} ${c.parents.length > 1 ? 'merge' : ''}" data-sha="${c.hash}" style="top:${top}px;--lane:${lineColor}">
       <span class="col-refs">${pillHtml}${pills.length ? '<span class="ref-line"></span>' : ''}</span>
       <span class="col-graph">${Graph.rowSvg(row, width, { initials: initials(c.author), head: c.hash === d.headSha })}</span>
@@ -438,10 +441,21 @@ function scrollToSha(sha) {
 }
 
 function select(sha) {
-  tab().selected = sha;
+  const t = tab();
+  if (t.selected === sha && !state.diffCtx) return;
+  t.selected = sha;
   closeDiff();
-  renderVisibleRows(true);
+  // Update the highlight in place: re-rendering rows here would swallow double-clicks.
+  $$('#graph-rows .g-row').forEach((r) => r.classList.toggle('selected', r.dataset.sha === sha));
+  $('#graph-rows').dataset.key = '';
   renderPanel();
+}
+
+// Double-click on a graph ref (or a row carrying one) switches to it, like GitKraken.
+function checkoutRef(ref, name) {
+  if (ref === 'local') return checkoutLocal(name);
+  if (ref === 'remote') return checkoutRemote(name);
+  if (ref === 'tag') return run(`Checking out ${name}…`, () => git(['checkout', '--detach', name]));
 }
 
 /* ---------------------------------------------------------------- render: right panel */
@@ -1170,13 +1184,25 @@ function bindEvents() {
       tab().limit += COMMIT_LIMIT_STEP;
       return run('Loading more commits…', async () => {}, { refresh: true });
     }
+    const more = e.target.closest('.pill.more');
+    if (more) {
+      e.stopPropagation();
+      const d = tab().data;
+      return contextMenu(e, refPills(d, more.dataset.sha).slice(1).map((p) => ({
+        label: `Checkout ${p.label}`, disabled: p.ref === 'local' && p.name === d.branch, action: () => checkoutRef(p.ref, p.name),
+      })));
+    }
     const row = e.target.closest('.g-row');
     if (row) select(row.dataset.sha);
   });
   $('#graph-rows').addEventListener('dblclick', (e) => {
     const pill = e.target.closest('.pill[data-ref]');
-    if (pill?.dataset.ref === 'local') return checkoutLocal(pill.dataset.name);
-    if (pill?.dataset.ref === 'remote') return checkoutRemote(pill.dataset.name);
+    if (pill) return checkoutRef(pill.dataset.ref, pill.dataset.name);
+    const row = e.target.closest('.g-row');
+    if (!row || row.dataset.sha === 'WIP' || e.target.closest('.pill.more')) return;
+    const d = tab().data;
+    const pills = refPills(d, row.dataset.sha).filter((p) => p.ref === 'local' || p.ref === 'remote');
+    if (pills.length && !(pills[0].ref === 'local' && pills[0].name === d.branch)) checkoutRef(pills[0].ref, pills[0].name);
   });
   $('#graph-rows').addEventListener('contextmenu', (e) => {
     const pill = e.target.closest('.pill[data-ref]');
