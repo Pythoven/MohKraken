@@ -334,6 +334,28 @@ input[type=checkbox] { width: auto; accent-color: var(--accent); }
 .diff-empty { padding: 40px; text-align: center; color: var(--muted); }
 .raw-diff { white-space: pre-wrap; font-size: 12px; }
 
+/* merge conflict editor */
+#merge-view { position: absolute; inset: 0; background: var(--bg); display: flex; flex-direction: column; z-index: 6; }
+#merge-conflicts { flex: 1 1 55%; overflow: auto; padding: 10px; min-height: 120px; }
+.mc { border: 1px solid var(--line); border-radius: 5px; margin-bottom: 12px; overflow: hidden; }
+.mc.done { border-color: rgba(76, 195, 138, .6); }
+.mc-head { display: flex; align-items: center; gap: 8px; padding: 5px 10px; background: var(--bg-3); font-size: 12px; }
+.mc-head .grow { flex: 1; }
+.mc-context { margin: 0; padding: 4px 10px; font-size: 12px; color: var(--muted); white-space: pre-wrap; font-family: "SF Mono", Menlo, Consolas, monospace; background: rgba(0, 0, 0, .12); }
+.mc-cols { display: grid; grid-template-columns: 1fr 1fr; }
+.mc-side { display: flex; flex-direction: column; min-width: 0; cursor: pointer; border-top: 1px solid var(--line); }
+.mc-side + .mc-side { border-left: 1px solid var(--line); }
+.mc-label { display: flex; align-items: center; gap: 7px; padding: 5px 10px; font-size: 12px; font-weight: 600; }
+.mc-side.ours .mc-label { color: #6aa7ff; }
+.mc-side.theirs .mc-label { color: var(--orange); }
+.mc-side pre { margin: 0; padding: 4px 10px 8px; font-size: 12px; white-space: pre-wrap; word-break: break-all; font-family: "SF Mono", Menlo, Consolas, monospace; flex: 1; }
+.mc-side.on.ours { background: rgba(106, 167, 255, .12); }
+.mc-side.on.theirs { background: rgba(240, 163, 58, .12); }
+.mc-empty { color: var(--muted); font-style: italic; }
+.merge-out-head { display: flex; gap: 12px; align-items: center; padding: 6px 12px; background: var(--bg-2); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: 12px; }
+#merge-output { flex: 1 1 45%; min-height: 120px; border: 0; border-radius: 0; resize: none; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; white-space: pre; overflow: auto; }
+.merge-note { padding: 30px; text-align: center; color: var(--muted); line-height: 1.7; }
+
 /* right panel */
 .panel-head { padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .wip-title { font-size: 13px; }
