@@ -22,8 +22,18 @@ const repoPath = () => tab() && tab().path;
 
 class GitError extends Error {}
 
+// Background fetches hold a per-repo lock; user commands wait for it so they don't collide
+// on git's lock files ("cannot lock ref").
+const fetchLocks = new Map();
+
+async function gitRaw(cwd, args, input) {
+  const lock = fetchLocks.get(cwd);
+  if (lock) await lock;
+  return window.mk.git(cwd, args, input);
+}
+
 async function git(args, { input, allowFail = false, cwd } = {}) {
-  const res = await window.mk.git(cwd || repoPath(), args, input);
+  const res = await gitRaw(cwd || repoPath(), args, input);
   if (res.code !== 0 && !allowFail) {
     throw new GitError((res.stderr || res.stdout || `git ${args[0]} failed`).trim());
   }
@@ -212,6 +222,7 @@ async function openTab(path) {
 }
 
 async function activateTab(i) {
+  if (i !== state.active && !(await confirmLeaveMerge())) return;
   state.active = i;
   closeDiff();
   renderTabs();
@@ -227,7 +238,9 @@ async function activateTab(i) {
   try { await loadRepo(); } catch (e) { toast(e.message, 'error'); } finally { setBusy(-1); }
 }
 
-function closeTab(i) {
+async function closeTab(i) {
+  if (i === state.active && !(await confirmLeaveMerge())) return;
+  closeDiff();
   const [t] = state.tabs.splice(i, 1);
   if (t.path && !state.tabs.some((o) => o.path === t.path)) window.mk.unwatch(t.path);
   if (!state.tabs.length) state.tabs.push({ path: null });
@@ -446,9 +459,10 @@ function scrollToSha(sha) {
   select(sha);
 }
 
-function select(sha) {
+async function select(sha) {
   const t = tab();
-  if (t.selected === sha && !state.diffCtx) return;
+  if (t.selected === sha && !state.diffCtx && !state.mergeCtx) return;
+  if (!(await confirmLeaveMerge())) return;
   t.selected = sha;
   closeDiff();
   // Update the highlight in place: re-rendering rows here would swallow double-clicks.
@@ -632,6 +646,10 @@ async function renderCommitPanel(sha) {
 /* ---------------------------------------------------------------- diff view */
 
 async function openDiff(kind, filePath) {
+  if (state.mergeCtx) {
+    if (!(await confirmLeaveMerge())) return;
+    closeDiff();
+  }
   const t = tab();
   const d = t.data;
   let file;
@@ -724,6 +742,8 @@ async function takeSide(p, side) {
 }
 
 async function openMerge(filePath) {
+  if (state.mergeCtx?.path === filePath) return;
+  if (!(await confirmLeaveMerge())) return;
   closeDiff();
   let file;
   try {
@@ -731,11 +751,12 @@ async function openMerge(filePath) {
   } catch (e) {
     file = null;
   }
-  const segments = file && !file.binary ? Merge.parse(file.text) : [];
+  const segments = file && !file.binary && !file.notUtf8 ? Merge.parse(file.text) : [];
   const conflicts = segments.filter((s) => s.type === 'conflict');
   state.mergeCtx = {
     path: filePath, segments, conflicts, choices: conflicts.map(() => ({})),
     original: file ? file.text : '', manual: false, dirty: false,
+    eol: file && /\r\n/.test(file.text) ? '\r\n' : '\n',
   };
   $('#merge-path').textContent = filePath;
   $('#merge-view').hidden = false;
@@ -750,8 +771,9 @@ async function openMerge(filePath) {
     $('#merge-sub').textContent = '';
     const why = !file ? 'This file was deleted on one side of the merge.'
       : file.binary ? 'This is a binary file, so it can\'t be merged line by line.'
+      : file.notUtf8 ? 'This file isn\'t UTF-8 text, so editing it here could corrupt it. Merge it in your editor, or keep one side:'
       : 'No conflict markers were found in this file.';
-    $('#merge-conflicts').innerHTML = `<div class="merge-note">${why}<br>Pick which version to keep:<br><br>
+    $('#merge-conflicts').innerHTML = `<div class="merge-note">${why}${file?.notUtf8 ? '' : '<br>Pick which version to keep:'}<br><br>
       <button class="btn" data-take="ours">Keep current (ours)</button>
       <button class="btn" data-take="theirs">Keep incoming (theirs)</button></div>`;
     return;
@@ -821,7 +843,8 @@ async function setMergeChoice(i, change) {
 
 async function saveMerge(resolve) {
   const ctx = state.mergeCtx;
-  const text = $('#merge-output').value;
+  // Textareas normalise line endings to LF; restore the file's own (CRLF on Windows files).
+  const text = $('#merge-output').value.replace(/\r?\n/g, ctx.eol);
   if (resolve && Merge.hasMarkers(text)
     && !(await confirmBox('Conflict markers remain', 'The output still contains <code>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</code> / <code>&gt;&gt;&gt;&gt;&gt;&gt;&gt;</code> lines. Mark the file resolved anyway?', 'Mark resolved'))) return;
   const ok = await run(resolve ? 'Resolving…' : 'Saving…', async () => {
@@ -839,9 +862,14 @@ async function saveMerge(resolve) {
   }
 }
 
+// True if it's fine to leave the conflict editor (nothing unsaved, or the user agreed to discard).
+async function confirmLeaveMerge() {
+  if (!state.mergeCtx?.dirty) return true;
+  return confirmBox('Discard merge edits?', `Your choices for <b>${esc(state.mergeCtx.path)}</b> have not been saved.`, 'Discard');
+}
+
 async function closeMerge() {
-  if (state.mergeCtx?.dirty && !(await confirmBox('Discard merge edits?', 'Your choices for this file have not been saved.', 'Discard'))) return;
-  closeDiff();
+  if (await confirmLeaveMerge()) closeDiff();
 }
 
 /* ---------------------------------------------------------------- auto-fetch & settings */
@@ -865,8 +893,11 @@ function startAutoFetch() {
         if (!t.path || !t.data?.remotes.length) continue;
         if (Date.now() - (t.lastFetch || 0) < mins * 60e3) continue;
         t.lastFetch = Date.now();
-        const res = await window.mk.git(t.path, ['fetch', '--all', '--prune', '--quiet'], null,
-          { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_SSH_COMMAND: 'ssh -o BatchMode=yes' });
+        const fetching = window.mk.git(t.path, ['fetch', '--all', '--prune', '--quiet'], null,
+          { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', MK_SSH_BATCH: '1' });
+        fetchLocks.set(t.path, fetching);
+        let res;
+        try { res = await fetching; } finally { fetchLocks.delete(t.path); }
         t.fetchError = res.code === 0 ? null : res.stderr.trim();
         if (t === tab() && !state.busy) await loadRepo();
       }
@@ -936,7 +967,7 @@ async function doCommit() {
 
 // Checks out a branch; if local changes block it, offers to stash them first (like GitKraken).
 async function checkout(args, label) {
-  const res = await window.mk.git(repoPath(), ['checkout', ...args]);
+  const res = await gitRaw(repoPath(), ['checkout', ...args]);
   if (res.code === 0) return loadRepo();
   if (!/would be overwritten|commit your changes or stash/i.test(res.stderr)) return toast(res.stderr.trim(), 'error', 'Checkout failed');
   const choice = await modal({
@@ -945,11 +976,15 @@ async function checkout(args, label) {
     buttons: [{ label: 'Stash & switch', value: 'stash', cls: 'primary' }],
   });
   if (choice !== 'stash') return;
-  await run(`Stashing and switching to ${label}…`, async () => {
+  let stashed = false;
+  const ok = await run(`Stashing and switching to ${label}…`, async () => {
     await git(['stash', 'push', '-u', '-m', `WIP before switching to ${label}`]);
+    stashed = true;
     await git(['checkout', ...args]);
+    return true;
   });
-  toast('Your changes were stashed – pop them from STASHES when ready', 'success');
+  if (ok) toast('Your changes were stashed – pop them from STASHES when ready', 'success');
+  else if (stashed) toast('Your changes are safe in STASHES, but switching branches failed. Pop the stash to get them back.', 'error', 'Switch failed');
 }
 
 async function checkoutLocal(name) {
@@ -1005,7 +1040,7 @@ async function push(force = false) {
     if (!vals) return;
     args = [...args, '-u', vals.remote, `${d.branch}:${vals.branch}`];
   }
-  const res = await window.mk.git(repoPath(), args);
+  const res = await gitRaw(repoPath(), args);
   if (res.code === 0) {
     await loadRepo();
     return toast('Push complete', 'success');
@@ -1072,7 +1107,7 @@ async function stashAction(act, ref) {
 async function undoCommit() {
   const d = tab().data;
   if (!d.headSha) return;
-  const res = await window.mk.git(repoPath(), ['rev-parse', '-q', '--verify', 'HEAD~1']);
+  const res = await gitRaw(repoPath(), ['rev-parse', '-q', '--verify', 'HEAD~1']);
   if (res.code !== 0) return toast('Nothing to undo – this is the first commit', 'info');
   const c = d.commits.find((x) => x.hash === d.headSha);
   if (!(await confirmBox('Undo last commit?', `<p>“${esc(c ? c.subject : d.headSha.slice(0, 7))}” will be undone. Its changes stay staged.</p>`, 'Undo'))) return;
@@ -1298,7 +1333,7 @@ async function renameBranch(name) {
 
 async function deleteBranch(name) {
   if (!(await confirmBox(`Delete ${name}?`, `The local branch <b>${esc(name)}</b> will be deleted.`, 'Delete'))) return;
-  const res = await window.mk.git(repoPath(), ['branch', '-d', name]);
+  const res = await gitRaw(repoPath(), ['branch', '-d', name]);
   if (res.code === 0) return loadRepo();
   if (/not fully merged/.test(res.stderr)) {
     if (await confirmBox('Branch not fully merged', `<b>${esc(name)}</b> contains commits that are not merged. Delete anyway?`, 'Force delete')) {
@@ -1555,7 +1590,8 @@ function bindEvents() {
     const take = e.target.closest('[data-take]');
     if (take) {
       const p = state.mergeCtx.path;
-      run(`Keeping ${take.dataset.take}…`, () => takeSide(p, take.dataset.take)).then(() => closeDiff());
+      run(`Keeping ${take.dataset.take}…`, async () => { await takeSide(p, take.dataset.take); return true; })
+        .then((ok) => { if (ok) closeDiff(); });
     }
   });
   $('#merge-output').addEventListener('input', () => {

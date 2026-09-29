@@ -23,7 +23,9 @@ function writeStore(data) {
 
 // Runs git without a shell. Resolves with { code, stdout, stderr } – never rejects on non-zero exit.
 // `extraEnv` adds/overrides environment variables for this call only.
-function runGit(cwd, args, input, extraEnv) {
+async function runGit(cwd, args, input, extraEnv = {}) {
+  const { MK_SSH_BATCH, ...env } = extraEnv;
+  if (MK_SSH_BATCH) Object.assign(env, await batchSshEnv(cwd));
   return new Promise((resolve) => {
     const child = spawn('git', args, {
       cwd,
@@ -34,7 +36,7 @@ function runGit(cwd, args, input, extraEnv) {
         ...(process.platform === 'win32' ? {} : { GIT_TERMINAL_PROMPT: '0' }),
         GIT_EDITOR: 'true',
         LC_ALL: 'C',
-        ...extraEnv,
+        ...env,
       },
     });
     // Collect raw bytes and decode once, so multi-byte characters split across chunks survive.
@@ -48,6 +50,18 @@ function runGit(cwd, args, input, extraEnv) {
     child.stdin.on('error', () => {});
     child.stdin.end(input != null ? input : undefined);
   });
+}
+
+// For background fetches: make ssh fail instead of prompting (for a passphrase or an unknown
+// host key), while keeping whatever ssh command the user configured (e.g. `ssh -i ~/.ssh/work`).
+async function batchSshEnv(cwd) {
+  if (process.env.GIT_SSH && !process.env.GIT_SSH_COMMAND) return {}; // a wrapper program we can't extend
+  const configured = process.env.GIT_SSH_COMMAND
+    || (await runGit(cwd, ['config', '--get', 'core.sshCommand'])).stdout.trim()
+    || 'ssh';
+  const program = configured.trim().split(/\s+/)[0].replace(/^["']|["']$/g, '');
+  if (!/(^|[\\/])ssh(\.exe)?$/i.test(program)) return {}; // e.g. plink: options differ, leave it alone
+  return { GIT_SSH_COMMAND: `${configured} -o BatchMode=yes` };
 }
 
 function createWindow() {
@@ -92,7 +106,11 @@ function repoFile(repo, rel) {
 ipcMain.handle('fs:readRepoFile', (_e, repo, rel) => {
   const buf = fs.readFileSync(repoFile(repo, rel));
   if (buf.subarray(0, 8000).includes(0)) return { binary: true, text: '' };
-  return { binary: false, text: buf.toString('utf8') };
+  try {
+    return { binary: false, text: new TextDecoder('utf-8', { fatal: true }).decode(buf) };
+  } catch {
+    return { binary: false, notUtf8: true, text: '' };
+  }
 });
 ipcMain.handle('fs:writeRepoFile', (_e, repo, rel, text) => {
   fs.writeFileSync(repoFile(repo, rel), text, 'utf8');
