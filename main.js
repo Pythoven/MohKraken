@@ -22,12 +22,20 @@ function writeStore(data) {
 }
 
 // Runs git without a shell. Resolves with { code, stdout, stderr } – never rejects on non-zero exit.
-function runGit(cwd, args, input) {
+// `extraEnv` adds/overrides environment variables for this call only.
+function runGit(cwd, args, input, extraEnv) {
   return new Promise((resolve) => {
     const child = spawn('git', args, {
       cwd,
       // Never block on a prompt or an editor: there is no terminal to answer it.
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true', LC_ALL: 'C' },
+      // On Windows, Git Credential Manager shows its own sign-in window, so leave prompting on there.
+      env: {
+        ...process.env,
+        ...(process.platform === 'win32' ? {} : { GIT_TERMINAL_PROMPT: '0' }),
+        GIT_EDITOR: 'true',
+        LC_ALL: 'C',
+        ...extraEnv,
+      },
     });
     // Collect raw bytes and decode once, so multi-byte characters split across chunks survive.
     const out = [];
@@ -72,7 +80,23 @@ function createWindow() {
   win.on('focus', () => win.webContents.send('window-focus'));
 }
 
-ipcMain.handle('git', (_e, cwd, args, input) => runGit(cwd, args, input));
+ipcMain.handle('git', (_e, cwd, args, input, extraEnv) => runGit(cwd, args, input, extraEnv));
+
+// Resolves a repo-relative path, refusing anything that escapes the repository.
+function repoFile(repo, rel) {
+  const root = path.resolve(repo);
+  const full = path.resolve(root, rel);
+  if (full !== root && !full.startsWith(root + path.sep)) throw new Error(`Path is outside the repository: ${rel}`);
+  return full;
+}
+ipcMain.handle('fs:readRepoFile', (_e, repo, rel) => {
+  const buf = fs.readFileSync(repoFile(repo, rel));
+  if (buf.subarray(0, 8000).includes(0)) return { binary: true, text: '' };
+  return { binary: false, text: buf.toString('utf8') };
+});
+ipcMain.handle('fs:writeRepoFile', (_e, repo, rel, text) => {
+  fs.writeFileSync(repoFile(repo, rel), text, 'utf8');
+});
 
 ipcMain.handle('store:get', () => readStore());
 ipcMain.handle('store:set', (_e, key, value) => {

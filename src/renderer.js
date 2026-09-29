@@ -691,7 +691,9 @@ function renderDiff() {
 
 function closeDiff() {
   state.diffCtx = null;
+  state.mergeCtx = null;
   $('#diff-view').hidden = true;
+  $('#merge-view').hidden = true;
   $$('#panel .file.active').forEach((el) => el.classList.remove('active'));
 }
 
@@ -704,6 +706,200 @@ async function applyHunk(index) {
     git(['apply', '--cached', '--whitespace=nowarn', ...(reverse ? ['-R'] : []), '-'], { input: patch }));
   const list = kind === 'staged' ? tab().data.status.staged : tab().data.status.unstaged;
   if (list.some((f) => f.path === file.path)) openDiff(kind, file.path);
+}
+
+/* ---------------------------------------------------------------- merge conflict editor */
+
+// Resolves a conflicted file wholesale. If the chosen side deleted the file, resolving means removing it.
+async function takeSide(p, side) {
+  const stages = await git(['ls-files', '-u', '-z', '--', p]);
+  const want = side === 'ours' ? '2' : '3';
+  const has = stages.split('\0').some((l) => l.split('\t')[0].split(' ')[2] === want);
+  if (has) {
+    await git(['checkout', `--${side}`, '--', p]);
+    await git(['add', '--', p]);
+  } else {
+    await git(['rm', '-q', '--', p]);
+  }
+}
+
+async function openMerge(filePath) {
+  closeDiff();
+  let file;
+  try {
+    file = await window.mk.readRepoFile(repoPath(), filePath);
+  } catch (e) {
+    file = null;
+  }
+  const segments = file && !file.binary ? Merge.parse(file.text) : [];
+  const conflicts = segments.filter((s) => s.type === 'conflict');
+  state.mergeCtx = {
+    path: filePath, segments, conflicts, choices: conflicts.map(() => ({})),
+    original: file ? file.text : '', manual: false, dirty: false,
+  };
+  $('#merge-path').textContent = filePath;
+  $('#merge-view').hidden = false;
+  $$('#panel .file').forEach((el) => el.classList.toggle('active', el.dataset.kind === 'conflict' && el.dataset.path === filePath));
+
+  const hasText = conflicts.length > 0;
+  $('#merge-save').hidden = !hasText;
+  $('#merge-resolve').hidden = !hasText;
+  $('#merge-output').hidden = !hasText;
+  $('.merge-out-head').hidden = !hasText;
+  if (!hasText) {
+    $('#merge-sub').textContent = '';
+    const why = !file ? 'This file was deleted on one side of the merge.'
+      : file.binary ? 'This is a binary file, so it can\'t be merged line by line.'
+      : 'No conflict markers were found in this file.';
+    $('#merge-conflicts').innerHTML = `<div class="merge-note">${why}<br>Pick which version to keep:<br><br>
+      <button class="btn" data-take="ours">Keep current (ours)</button>
+      <button class="btn" data-take="theirs">Keep incoming (theirs)</button></div>`;
+    return;
+  }
+  $('#merge-output').value = Merge.build(segments, state.mergeCtx.choices);
+  renderMerge();
+}
+
+function renderMerge() {
+  const ctx = state.mergeCtx;
+  const d = tab().data;
+  const n = ctx.conflicts.length;
+  const rebase = d.op === 'rebase';
+  const lastLines = (lines, k) => lines.slice(-k).join('').replace(/\n$/, '');
+  $('#merge-sub').textContent = ` · ${n} conflict${n === 1 ? '' : 's'}${rebase ? ' · during a rebase, "current" is the branch you are rebasing onto' : ''}`;
+
+  let ci = 0;
+  let html = '';
+  ctx.segments.forEach((seg, si) => {
+    if (seg.type !== 'conflict') return;
+    const i = ci++;
+    const c = ctx.choices[i];
+    const prev = ctx.segments[si - 1];
+    const side = (name, lines, lbl) => `
+      <label class="mc-side ${name} ${c[name] ? 'on' : ''}">
+        <div class="mc-label"><input type="checkbox" data-ci="${i}" data-side="${name}" ${c[name] ? 'checked' : ''}>${esc(lbl)}</div>
+        <pre>${lines.length ? esc(lines.join('')) : '<span class="mc-empty">(nothing – this side removed these lines)</span>'}</pre>
+      </label>`;
+    html += `<div class="mc ${c.ours || c.theirs ? 'done' : ''}" data-ci="${i}">
+      <div class="mc-head"><b>Conflict ${i + 1} of ${n}</b><span class="grow"></span>
+        <button class="btn tiny" data-pick="ours" data-ci="${i}">Current</button>
+        <button class="btn tiny" data-pick="theirs" data-ci="${i}">Incoming</button>
+        <button class="btn tiny" data-pick="both" data-ci="${i}">Both</button></div>
+      ${prev && prev.type === 'common' ? `<pre class="mc-context">${esc(lastLines(prev.lines, 2))}</pre>` : ''}
+      <div class="mc-cols">
+        ${side('ours', seg.ours, `Current${seg.oursLabel ? ` (${seg.oursLabel})` : ''}`)}
+        ${side('theirs', seg.theirs, `Incoming${seg.theirsLabel ? ` (${seg.theirsLabel})` : ''}`)}
+      </div></div>`;
+  });
+  $('#merge-conflicts').innerHTML = html;
+  updateMergeStatus();
+}
+
+function updateMergeStatus() {
+  const ctx = state.mergeCtx;
+  const done = ctx.choices.filter((c) => c.ours || c.theirs).length;
+  const markers = Merge.hasMarkers($('#merge-output').value);
+  $('#merge-status').textContent = ctx.manual
+    ? `edited by hand${markers ? ' · conflict markers remain' : ''}`
+    : `${done} of ${ctx.conflicts.length} resolved${markers ? '' : ' · ready'}`;
+}
+
+async function setMergeChoice(i, change) {
+  const ctx = state.mergeCtx;
+  if (ctx.manual && !(await confirmBox('Replace your edits?', 'You edited the output by hand. Choosing a side rebuilds the output from your choices.', 'Replace'))) {
+    renderMerge();
+    return;
+  }
+  const c = ctx.choices[i];
+  Object.assign(c, change(c));
+  if (!c.ours || !c.theirs) c.first = c.ours ? 'ours' : c.theirs ? 'theirs' : undefined;
+  ctx.manual = false;
+  ctx.dirty = true;
+  $('#merge-output').value = Merge.build(ctx.segments, ctx.choices);
+  renderMerge();
+}
+
+async function saveMerge(resolve) {
+  const ctx = state.mergeCtx;
+  const text = $('#merge-output').value;
+  if (resolve && Merge.hasMarkers(text)
+    && !(await confirmBox('Conflict markers remain', 'The output still contains <code>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</code> / <code>&gt;&gt;&gt;&gt;&gt;&gt;&gt;</code> lines. Mark the file resolved anyway?', 'Mark resolved'))) return;
+  const ok = await run(resolve ? 'Resolving…' : 'Saving…', async () => {
+    await window.mk.writeRepoFile(repoPath(), ctx.path, text);
+    if (resolve) await git(['add', '--', ctx.path]);
+    return true;
+  });
+  if (!ok) return;
+  ctx.dirty = false;
+  if (resolve) {
+    closeDiff();
+    toast(`${ctx.path} resolved`, 'success');
+  } else {
+    toast('Saved', 'success');
+  }
+}
+
+async function closeMerge() {
+  if (state.mergeCtx?.dirty && !(await confirmBox('Discard merge edits?', 'Your choices for this file have not been saved.', 'Discard'))) return;
+  closeDiff();
+}
+
+/* ---------------------------------------------------------------- auto-fetch & settings */
+
+const AUTO_FETCH_DEFAULT = 5; // minutes; 0 = off
+
+function autoFetchMinutes() {
+  const v = state.store.autoFetch;
+  return v == null ? AUTO_FETCH_DEFAULT : v;
+}
+
+// Every minute, quietly fetch each open repo whose last fetch is older than the interval.
+// Never prompts for credentials: a repo that needs sign-in is simply skipped.
+function startAutoFetch() {
+  setInterval(async () => {
+    const mins = autoFetchMinutes();
+    if (!mins || state.busy || state.autoFetching) return;
+    state.autoFetching = true;
+    try {
+      for (const t of state.tabs) {
+        if (!t.path || !t.data?.remotes.length) continue;
+        if (Date.now() - (t.lastFetch || 0) < mins * 60e3) continue;
+        t.lastFetch = Date.now();
+        const res = await window.mk.git(t.path, ['fetch', '--all', '--prune', '--quiet'], null,
+          { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_SSH_COMMAND: 'ssh -o BatchMode=yes' });
+        t.fetchError = res.code === 0 ? null : res.stderr.trim();
+        if (t === tab() && !state.busy) await loadRepo();
+      }
+    } finally {
+      state.autoFetching = false;
+      renderFetchStatus();
+    }
+  }, 60e3);
+}
+
+function renderFetchStatus() {
+  const t = tab();
+  const el = $('#status-text');
+  if (!t?.path || state.busy) return;
+  el.textContent = t.fetchError ? '⚠ Auto-fetch failed' : t.lastFetch ? `Fetched ${relTime(t.lastFetch / 1000)}` : 'Ready';
+  el.title = t.fetchError || '';
+}
+
+async function editSettings() {
+  const cur = autoFetchMinutes();
+  const opts = [[0, 'Off'], [1, 'Every minute'], [5, 'Every 5 minutes'], [10, 'Every 10 minutes'], [15, 'Every 15 minutes'], [30, 'Every 30 minutes']];
+  const vals = await modal({
+    title: 'Preferences',
+    body: `<label>Auto-fetch remotes</label>
+      <select name="autoFetch">${opts.map(([v, l]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <p class="muted">Fetching only downloads new commits and branches from your remotes. It never changes your files or branches.</p>`,
+    buttons: [{ label: 'Save', value: 'ok', cls: 'primary' }],
+    form: true,
+  });
+  if (!vals) return;
+  state.store.autoFetch = +vals.autoFetch;
+  window.mk.storeSet('autoFetch', state.store.autoFetch);
+  toast(state.store.autoFetch ? `Auto-fetch every ${state.store.autoFetch} min` : 'Auto-fetch off', 'success');
 }
 
 /* ---------------------------------------------------------------- actions */
@@ -1284,11 +1480,18 @@ function bindEvents() {
       if (act === 'stage') return run('Staging…', () => stageFile(p));
       if (act === 'unstage') return run('Unstaging…', () => unstageFile(d.status.staged.find((f) => f.path === p)));
       if (act === 'resolve') return run('Marking resolved…', () => git(['add', '--', p]));
-      if (act === 'ours' || act === 'theirs') return run(`Taking ${act}…`, async () => { await git(['checkout', `--${act}`, '--', p]); await git(['add', '--', p]); });
+      if (act === 'ours' || act === 'theirs') return run(`Taking ${act}…`, () => takeSide(p, act));
       if (act === 'discard') return discardFile(d.status.unstaged.find((f) => f.path === p));
     }
-    if (fileEl) return openDiff(fileEl.dataset.kind, fileEl.dataset.path);
-    if (e.target.id === 'stage-all') return run('Staging all…', () => git(['add', '-A']));
+    if (fileEl) return fileEl.dataset.kind === 'conflict' ? openMerge(fileEl.dataset.path) : openDiff(fileEl.dataset.kind, fileEl.dataset.path);
+    if (e.target.id === 'stage-all') {
+      // Never mark conflicted files resolved as a side effect: they may still hold conflict markers.
+      // `git add -A` ignores exclude pathspecs for conflicted paths, so pass the exact list instead
+      // (via stdin, which also avoids command-line length limits on Windows).
+      if (!d.status.conflicted.length) return run('Staging all…', () => git(['add', '-A']));
+      const list = d.status.unstaged.map((f) => f.path).join('\0');
+      return run('Staging all…', () => git(['add', '-A', '--pathspec-from-file=-', '--pathspec-file-nul'], { input: list }));
+    }
     if (e.target.id === 'unstage-all') return run('Unstaging all…', () => (d.headSha ? git(['reset', '-q']) : git(['rm', '--cached', '-r', '-q', '.'])));
     if (e.target.id === 'commit-btn') return doCommit();
     const goto = e.target.closest('[data-goto]');
@@ -1335,6 +1538,40 @@ function bindEvents() {
     window.mk.storeSet('diffMode', state.diffMode);
     renderDiff();
   };
+  $('#merge-conflicts').addEventListener('change', (e) => {
+    const cb = e.target.closest('input[data-side]');
+    if (!cb) return;
+    const side = cb.dataset.side;
+    const on = cb.checked;
+    setMergeChoice(+cb.dataset.ci, (c) => ({ [side]: on, first: on && !(c.ours || c.theirs) ? side : c.first }));
+  });
+  $('#merge-conflicts').addEventListener('click', (e) => {
+    const pick = e.target.closest('[data-pick]');
+    if (pick) {
+      const p = pick.dataset.pick;
+      return setMergeChoice(+pick.dataset.ci, () => (p === 'both'
+        ? { ours: true, theirs: true, first: 'ours' } : { ours: p === 'ours', theirs: p === 'theirs', first: p }));
+    }
+    const take = e.target.closest('[data-take]');
+    if (take) {
+      const p = state.mergeCtx.path;
+      run(`Keeping ${take.dataset.take}…`, () => takeSide(p, take.dataset.take)).then(() => closeDiff());
+    }
+  });
+  $('#merge-output').addEventListener('input', () => {
+    state.mergeCtx.manual = true;
+    state.mergeCtx.dirty = true;
+    updateMergeStatus();
+  });
+  $('#merge-output').addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab') return;
+    e.preventDefault();
+    document.execCommand('insertText', false, '\t');
+  });
+  $('#merge-cancel').onclick = closeMerge;
+  $('#merge-save').onclick = () => saveMerge(false);
+  $('#merge-resolve').onclick = () => saveMerge(true);
+
   $('#diff-body').addEventListener('click', (e) => {
     const b = e.target.closest('.hunk-btn');
     if (b) applyHunk(+b.dataset.hunk);
@@ -1377,7 +1614,11 @@ function bindEvents() {
   // Keyboard
   document.addEventListener('keydown', (e) => {
     const mod = e.metaKey || e.ctrlKey;
-    if (e.key === 'Escape') { $('#ctx-menu').hidden = true; if (state.diffCtx) closeDiff(); }
+    if (e.key === 'Escape') {
+      $('#ctx-menu').hidden = true;
+      if (state.mergeCtx) closeMerge();
+      else if (state.diffCtx) closeDiff();
+    }
     if (mod && e.key === 'r') { e.preventDefault(); if (repoPath()) run('Refreshing…', async () => {}); }
     if (mod && e.key === 'f' && repoPath()) { e.preventDefault(); $('#search').focus(); $('#search').select(); }
     if (mod && e.key === 't') { e.preventDefault(); newTab(); }
@@ -1429,6 +1670,7 @@ function handleAction(action) {
     terminal: () => window.mk.openTerminal(repoPath()),
     finder: () => window.mk.openPath(repoPath()),
     profile: editProfile,
+    settings: editSettings,
     refresh: () => run('Refreshing…', async () => {}),
   };
   map[action] && map[action]();
@@ -1451,9 +1693,11 @@ function handleAction(action) {
   for (const p of state.store.tabs || []) if (await window.mk.exists(p)) saved.push(p);
   if (!saved.length) {
     state.tabs = [{ path: null }];
+    startAutoFetch();
     return activateTab(0);
   }
   state.tabs = saved.map((p) => ({ path: p, data: null, selected: null, limit: COMMIT_LIMIT_STEP, search: '' }));
   saved.forEach((p) => window.mk.watch(p));
+  startAutoFetch();
   await activateTab(Math.max(0, saved.indexOf(state.store.activeTab)));
 })();

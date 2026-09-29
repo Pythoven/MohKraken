@@ -40,6 +40,7 @@
       <button class="tb-btn small" data-action="terminal" title="Open in Terminal"><i>⌨</i></button>
       <button class="tb-btn small" data-action="finder" title="Reveal in Finder"><i>📁</i></button>
       <button class="tb-btn small" data-action="profile" title="Git identity"><i>👤</i></button>
+      <button class="tb-btn small" data-action="settings" title="Preferences"><i>⚙</i></button>
       <button class="tb-btn small" data-action="refresh" title="Refresh  ⌘R"><i>↻</i></button>
     </div>
   </nav>
@@ -82,6 +83,19 @@
         </div>
         <div id="diff-body"></div>
       </div>
+      <div id="merge-view" hidden>
+        <div class="diff-head">
+          <div class="diff-title"><span id="merge-path"></span><span id="merge-sub" class="muted"></span></div>
+          <div class="diff-tools">
+            <button class="btn small" id="merge-cancel">Close</button>
+            <button class="btn small" id="merge-save">Save</button>
+            <button class="btn small primary" id="merge-resolve">Save &amp; mark resolved</button>
+          </div>
+        </div>
+        <div id="merge-conflicts"></div>
+        <div class="merge-out-head"><b>Output</b><span id="merge-status" class="muted"></span></div>
+        <textarea id="merge-output" spellcheck="false" wrap="off"></textarea>
+      </div>
     </section>
     <div class="resizer" data-target="panel"></div>
     <aside id="panel"></aside>
@@ -98,6 +112,7 @@
 
   <script src="graph.js"></script>
   <script src="diff.js"></script>
+  <script src="merge.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
