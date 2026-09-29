@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, screen } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -8,8 +8,10 @@ const watchers = new Map();
 let win;
 
 // Apps launched from Finder get a minimal PATH; make sure Homebrew/MacPorts git is found.
-process.env.PATH = [...new Set(['/opt/homebrew/bin', '/usr/local/bin', '/opt/local/bin',
-  ...(process.env.PATH || '').split(':'), '/usr/bin', '/bin'])].filter(Boolean).join(':');
+if (process.platform !== 'win32') {
+  process.env.PATH = [...new Set(['/opt/homebrew/bin', '/usr/local/bin', '/opt/local/bin',
+    ...(process.env.PATH || '').split(path.delimiter), '/usr/bin', '/bin'])].filter(Boolean).join(path.delimiter);
+}
 
 function readStore() {
   try { return JSON.parse(fs.readFileSync(STORE_FILE(), 'utf8')); } catch { return {}; }
@@ -24,20 +26,28 @@ function runGit(cwd, args, input) {
   return new Promise((resolve) => {
     const child = spawn('git', args, {
       cwd,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' },
+      // Never block on a prompt or an editor: there is no terminal to answer it.
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true', LC_ALL: 'C' },
     });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d) => (stdout += d));
-    child.stderr.on('data', (d) => (stderr += d));
-    child.on('error', (err) => resolve({ code: -1, stdout, stderr: err.message }));
-    child.on('close', (code) => resolve({ code, stdout, stderr }));
-    if (input != null) child.stdin.end(input);
+    // Collect raw bytes and decode once, so multi-byte characters split across chunks survive.
+    const out = [];
+    const err = [];
+    child.stdout.on('data', (d) => out.push(d));
+    child.stderr.on('data', (d) => err.push(d));
+    const text = (bufs) => Buffer.concat(bufs).toString('utf8');
+    child.on('error', (e) => resolve({ code: -1, stdout: text(out), stderr: e.message }));
+    child.on('close', (code) => resolve({ code, stdout: text(out), stderr: text(err) }));
+    child.stdin.on('error', () => {});
+    child.stdin.end(input != null ? input : undefined);
   });
 }
 
 function createWindow() {
-  const state = readStore().window || { width: 1440, height: 900 };
+  const state = { width: 1440, height: 900, ...readStore().window };
+  // Drop a saved position that is no longer on any connected display.
+  const onScreen = state.x != null && screen.getAllDisplays().some(({ workArea: a }) =>
+    state.x < a.x + a.width && state.x + state.width > a.x && state.y < a.y + a.height && state.y + state.height > a.y);
+  if (!onScreen) { delete state.x; delete state.y; }
   win = new BrowserWindow({
     ...state,
     minWidth: 1000,
@@ -114,6 +124,19 @@ ipcMain.handle('watch:stop', (_e, repo) => {
   if (w) { w.close(); watchers.delete(repo); }
 });
 
+// Custom menu: the default one binds CmdOrCtrl+W/R to close-window/reload, which would
+// swallow the app's own close-tab/refresh shortcuts.
+function buildMenu() {
+  const mac = process.platform === 'darwin';
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    ...(mac ? [{ role: 'appMenu' }] : []),
+    { label: 'File', submenu: [mac ? { role: 'close', accelerator: 'Shift+CmdOrCtrl+W' } : { role: 'quit' }] },
+    { role: 'editMenu' },
+    { label: 'View', submenu: [{ role: 'toggleDevTools' }, { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { type: 'separator' }, { role: 'togglefullscreen' }] },
+    { role: 'windowMenu' },
+  ]));
+}
+
 app.setName('MohKraken');
-app.whenReady().then(createWindow);
+app.whenReady().then(() => { buildMenu(); createWindow(); });
 app.on('window-all-closed', () => app.quit());

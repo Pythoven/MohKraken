@@ -102,7 +102,7 @@ const Graph = (() => {
     } else {
       parts.push(`<circle cx="${cx}" cy="${mid}" r="8" fill="${col}"/>`);
       if (opts.initials) {
-        parts.push(`<text x="${cx}" y="${mid + 3.5}" text-anchor="middle" font-size="8.5" font-weight="700" fill="#fff">${opts.initials}</text>`);
+        parts.push(`<text x="${cx}" y="${mid + 3.5}" text-anchor="middle" font-size="8.5" font-weight="700" fill="#fff">${Diff.esc(opts.initials)}</text>`);
       }
       if (opts.head) parts.push(`<circle cx="${cx}" cy="${mid}" r="10.5" fill="none" stroke="#fff" stroke-width="1.5"/>`);
     }

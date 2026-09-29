@@ -1,6 +1,7 @@
 // Unified diff parsing and rendering (inline + split views).
 const Diff = (() => {
-  const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
   // Parses the output of `git diff` for a single file into { header, hunks, binary }.
   function parse(text) {

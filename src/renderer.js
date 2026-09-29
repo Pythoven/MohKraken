@@ -118,11 +118,13 @@ async function loadRepo() {
   const t = tab();
   if (!t || !t.path) return;
   const cwd = t.path;
+  // Refreshes can overlap (watcher, focus, actions); only the newest one may write results.
+  const seq = (t.loadSeq = (t.loadSeq || 0) + 1);
 
   const [headRes, headShaRes, statusRaw, refsRaw, stashRaw, remotesRaw, gitDir] = await Promise.all([
     git(['symbolic-ref', '--short', '-q', 'HEAD'], { allowFail: true, cwd }),
     git(['rev-parse', '-q', '--verify', 'HEAD'], { allowFail: true, cwd }),
-    git(['status', '--porcelain=v1', '-z', '-uall'], { cwd }).catch(() => ''),
+    git(['--no-optional-locks', 'status', '--porcelain=v1', '-z', '-uall'], { cwd }).catch(() => ''),
     git(['for-each-ref', `--format=%(refname)${SEP}%(refname:short)${SEP}%(objectname)${SEP}%(*objectname)${SEP}%(upstream:short)${SEP}%(upstream:track)`,
       'refs/heads', 'refs/remotes', 'refs/tags'], { cwd }).catch(() => ''),
     git(['stash', 'list', `--format=%gd${SEP}%H${SEP}%s${SEP}%at`], { cwd }).catch(() => ''),
@@ -136,6 +138,7 @@ async function loadRepo() {
       `--format=%H${SEP}%P${SEP}%an${SEP}%ae${SEP}%at${SEP}%s%x1e`], { cwd }).catch(() => '')
     : '';
 
+  if (seq !== t.loadSeq) return;
   const dir = gitDir.trim();
   const [merging, rebasing, picking, reverting] = await Promise.all([
     window.mk.exists(`${dir}/MERGE_HEAD`),
@@ -152,6 +155,7 @@ async function loadRepo() {
     return { ref, hash, msg, time: +time };
   });
 
+  if (seq !== t.loadSeq) return;
   const commits = parseLog(logRaw);
   const status = parseStatus(statusRaw);
   const refs = parseRefs(refsRaw);
@@ -171,7 +175,7 @@ async function loadRepo() {
   if (!t.selected || (t.selected === 'WIP' && !dirty) || (t.selected !== 'WIP' && !graphCommits.some((c) => c.hash === t.selected))) {
     t.selected = dirty ? 'WIP' : headSha;
   }
-  renderAll();
+  if (t === tab()) renderAll();
 }
 
 /* ---------------------------------------------------------------- tabs & welcome */
@@ -195,6 +199,8 @@ async function openTab(path) {
   const isRepo = await window.mk.git(path, ['rev-parse', '--show-toplevel']);
   if (isRepo.code !== 0) return toast(`${path} is not a Git repository`, 'error');
   const root = isRepo.stdout.trim();
+  const dupe = state.tabs.findIndex((o) => o.path === root);
+  if (dupe !== -1) return activateTab(dupe);
   const t = { path: root, data: null, selected: null, limit: COMMIT_LIMIT_STEP, search: '' };
   const cur = tab();
   if (cur && !cur.path) state.tabs[state.active] = t;
@@ -257,9 +263,15 @@ function renderAll() {
   $('[data-action="pull"]').dataset.badge = cur?.behind || '';
   $('[data-action="push"]').dataset.badge = cur?.ahead || '';
   $('#status-right').textContent = `${d.commits.filter((c) => !c.wip).length}${d.truncated ? '+' : ''} commits · ${d.refs.local.length} branches`;
+  // Re-rendering replaces inputs; keep focus and caret where the user was typing.
+  const el = document.activeElement;
+  const keep = el && el.id && /^(side-filter|commit-summary|commit-body)$/.test(el.id)
+    ? { id: el.id, start: el.selectionStart, end: el.selectionEnd } : null;
   renderSidebar();
   renderGraph();
   renderPanel();
+  const again = keep && document.getElementById(keep.id);
+  if (again) { again.focus(); again.setSelectionRange(keep.start, keep.end); }
 }
 
 /* ---------------------------------------------------------------- render: sidebar */
@@ -314,12 +326,6 @@ function renderSidebar() {
       ${section('stash', 'STASHES', d.stashes.length, stashes)}
       ${section('tags', 'TAGS', d.refs.tags.length, tags, add('tag'))}
     </div>`;
-
-  if (filter) {
-    const input = $('#side-filter');
-    input.focus();
-    input.setSelectionRange(filter.length, filter.length);
-  }
 }
 
 /* ---------------------------------------------------------------- render: graph */
@@ -412,7 +418,7 @@ function renderVisibleRows(force) {
     const pills = refPills(d, c.hash);
     const pillHtml = pills.slice(0, 1).map((p) =>
       `<span class="pill ${p.cls}" data-ref="${p.ref}" data-name="${esc(p.name)}" style="--lane:${lineColor}" title="${esc(p.label)}"><span class="pi">${p.icons}</span>${esc(p.label)}</span>`).join('')
-      + (pills.length > 1 ? `<span class="pill more" data-sha="${c.hash}" title=""${esc(pills.slice(1).map((p) => p.label).join('\n'))}">+${pills.length - 1}</span>` : '');
+      + (pills.length > 1 ? `<span class="pill more" data-sha="${c.hash}" title="${esc(pills.slice(1).map((p) => p.label).join('\n'))}">+${pills.length - 1}</span>` : '');
     html += `<div class="g-row ${sel} ${dim} ${c.parents.length > 1 ? 'merge' : ''}" data-sha="${c.hash}" style="top:${top}px;--lane:${lineColor}">
       <span class="col-refs">${pillHtml}${pills.length ? '<span class="ref-line"></span>' : ''}</span>
       <span class="col-graph">${Graph.rowSvg(row, width, { initials: initials(c.author), head: c.hash === d.headSha })}</span>
@@ -633,6 +639,7 @@ async function openDiff(kind, filePath) {
   let hunkAction = null;
   if (kind === 'unstaged') {
     file = d.status.unstaged.find((f) => f.path === filePath);
+    if (!file) return;
     if (file.untracked) {
       text = (await git(['diff', '--no-index', '--', '/dev/null', filePath], { allowFail: true })).stdout;
     } else {
@@ -641,6 +648,7 @@ async function openDiff(kind, filePath) {
     }
   } else if (kind === 'staged') {
     file = d.status.staged.find((f) => f.path === filePath);
+    if (!file) return;
     text = await git(['diff', '--cached', '-M', '--', ...(file.orig ? [file.orig] : []), filePath]);
     hunkAction = 'Unstage hunk';
   } else if (kind === 'conflict') {
@@ -648,12 +656,14 @@ async function openDiff(kind, filePath) {
     text = await git(['diff', '--', filePath], { allowFail: true }).then((r) => r.stdout);
   } else {
     const cf = t.commitFiles;
-    file = cf.files.find((f) => f.path === filePath);
+    file = cf?.files.find((f) => f.path === filePath);
+    if (!file) return;
     const paths = ['--', ...(file.orig ? [file.orig] : []), filePath];
     text = cf.parent
       ? await git(['diff', '-M', cf.parent, cf.sha, ...paths])
       : await git(['show', '--format=', '-M', cf.sha, ...paths]);
   }
+  if (!file) return;
   state.diffCtx = { kind, file, text, hunkAction };
   renderDiff();
   $$('#panel .file').forEach((el) => el.classList.toggle('active', el.dataset.kind === kind && el.dataset.path === filePath));
@@ -662,6 +672,12 @@ async function openDiff(kind, filePath) {
 function renderDiff() {
   const ctx = state.diffCtx;
   if (!ctx) return;
+  if (ctx.text.length > 3e6 && !ctx.forceLarge) {
+    $('#diff-path').textContent = ctx.file.path;
+    $('#diff-body').innerHTML = `<div class="diff-empty">This diff is large (${(ctx.text.length / 1e6).toFixed(1)} MB) and may be slow to show.<br><br><button class="btn small" id="diff-force">Show anyway</button></div>`;
+    $('#diff-view').hidden = false;
+    return;
+  }
   const { html, parsed } = Diff.render(ctx.text, { mode: state.diffMode, hunkAction: ctx.hunkAction });
   ctx.parsed = parsed;
   $('#diff-path').textContent = ctx.file.orig ? `${ctx.file.orig} → ${ctx.file.path}` : ctx.file.path;
@@ -768,7 +784,10 @@ async function pull() {
   const d = tab().data;
   const cur = d.refs.local.find((b) => b.name === d.branch);
   if (!cur || !cur.upstream) return toast('Current branch has no upstream to pull from', 'info');
-  const res = await run('Pulling…', () => git(['pull', '--no-edit']));
+  // Git >= 2.27 refuses to pull divergent branches without a strategy; default to merge
+  // (GitKraken's "fast-forward if possible") unless the user configured one.
+  const configured = (await git(['config', '--get', 'pull.rebase'], { allowFail: true })).code === 0;
+  const res = await run('Pulling…', () => git(['pull', '--no-edit', ...(configured ? [] : ['--no-rebase'])]));
   if (res !== undefined) toast('Pull complete', 'success');
 }
 
@@ -893,11 +912,12 @@ async function editProfile() {
   });
   if (!vals) return;
   const scope = vals.global ? '--global' : '--local';
-  await run('Saving identity…', async () => {
+  const ok = await run('Saving identity…', async () => {
     if (vals.name.trim()) await git(['config', scope, 'user.name', vals.name.trim()]);
     if (vals.email.trim()) await git(['config', scope, 'user.email', vals.email.trim()]);
+    return true;
   });
-  toast('Identity saved', 'success');
+  if (ok) toast('Identity saved', 'success');
 }
 
 async function cloneRepo() {
@@ -1216,7 +1236,14 @@ function bindEvents() {
   });
 
   // Sidebar
-  $('#sidebar').addEventListener('input', (e) => { if (e.target.id === 'side-filter') renderSidebar(); });
+  $('#sidebar').addEventListener('input', (e) => {
+    if (e.target.id !== 'side-filter') return;
+    const pos = e.target.selectionStart;
+    renderSidebar();
+    const input = $('#side-filter');
+    input.focus();
+    input.setSelectionRange(pos, pos);
+  });
   $('#sidebar').addEventListener('click', (e) => {
     const add = e.target.closest('[data-add]');
     if (add) {
@@ -1311,6 +1338,7 @@ function bindEvents() {
   $('#diff-body').addEventListener('click', (e) => {
     const b = e.target.closest('.hunk-btn');
     if (b) applyHunk(+b.dataset.hunk);
+    if (e.target.id === 'diff-force') { state.diffCtx.forceLarge = true; renderDiff(); }
   });
 
   // Search
@@ -1355,7 +1383,7 @@ function bindEvents() {
     if (mod && e.key === 't') { e.preventDefault(); newTab(); }
     if (mod && e.key === 'w') { e.preventDefault(); closeTab(state.active); }
     if (mod && e.key === 'o') { e.preventDefault(); openRepo(); }
-    if (!mod && (e.key === 'ArrowDown' || e.key === 'ArrowUp') && repoPath() && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) {
+    if (!mod && (e.key === 'ArrowDown' || e.key === 'ArrowUp') && tab()?.data && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) {
       e.preventDefault();
       const list = tab().data.commits;
       const i = list.findIndex((c) => c.hash === tab().selected);
@@ -1393,7 +1421,7 @@ function handleAction(action) {
     init: initRepo,
     pull,
     push: () => push(),
-    fetch: () => run('Fetching…', () => git(['fetch', '--all', '--prune'])).then(() => toast('Fetch complete', 'success')),
+    fetch: () => run('Fetching…', () => git(['fetch', '--all', '--prune'])).then((res) => res !== undefined && toast('Fetch complete', 'success')),
     branch: () => createBranch(),
     stash,
     pop: () => (tab().data.stashes.length ? stashAction('pop', 'stash@{0}') : toast('No stashes to pop', 'info')),
